@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Invinz">
+<meta name="mobile-web-app-capable" content="yes">
 <title>Invinz Player</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
@@ -274,6 +277,12 @@
   var $ = function(id){ return document.getElementById(id); };
   var audio = $('audio'), tracks = [], idx = -1, shuffle = false, repeat = false, seeking = false;
   var actx = null, analyser = null, data = null, raf = 0;
+  var IOS = /iP(hone|od|ad)/.test(navigator.userAgent) ||
+            (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent));
+  var artUrl = null, posTick = 0;
+
+  audio.setAttribute('playsinline','');
+  audio.preload = 'auto';
 
   function fmt(s){
     if(!isFinite(s) || s < 0) s = 0;
@@ -410,6 +419,10 @@
     $('scopeIdle').hidden = false;
     $('dot').classList.remove('live');
     icon(false);
+    if('mediaSession' in navigator){
+      try{ navigator.mediaSession.metadata = null; }catch(e){}
+      navigator.mediaSession.playbackState = 'none';
+    }
   }
 
   /* ---------- playback ---------- */
@@ -421,6 +434,7 @@
     $('title').textContent = t.name;
     $('sub').textContent = t.meta + ' · track ' + (i+1) + ' of ' + tracks.length;
     $('scopeIdle').hidden = true;
+    setMeta();
     render();
     if(autoplay) play();
   }
@@ -474,9 +488,13 @@
 
   audio.addEventListener('play', function(){
     icon(true); $('dot').classList.add('live'); render(); draw();
+    if('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+    setMeta(); setPos();
   });
   audio.addEventListener('pause', function(){
     icon(false); $('dot').classList.remove('live'); render();
+    if('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+    setPos();
   });
   audio.addEventListener('ended', function(){
     if(repeat){ audio.currentTime = 0; play(); return; }
@@ -486,12 +504,14 @@
   audio.addEventListener('loadedmetadata', function(){
     $('dur').textContent = fmt(audio.duration);
     if(tracks[idx] && !tracks[idx].dur){ tracks[idx].dur = audio.duration; render(); }
+    setPos();
   });
   audio.addEventListener('timeupdate', function(){
     $('cur').textContent = fmt(audio.currentTime);
     if(!seeking && audio.duration){
       $('seek').value = Math.round(audio.currentTime / audio.duration * 1000);
     }
+    if(!posTick--){ posTick = 15; setPos(); }
   });
   audio.addEventListener('error', function(){
     if(audio.getAttribute('src')) say('Could not decode this file.');
@@ -534,7 +554,8 @@
   window.addEventListener('resize', size); size();
 
   function initAudioGraph(){
-    if(actx) return;
+    if(actx || IOS) return; // iOS suspends the AudioContext on lock -> audio would stop
+
     var AC = window.AudioContext || window.webkitAudioContext;
     if(!AC) return;
     try{
@@ -559,12 +580,23 @@
       var acc = css('--acc') || '#B87A12';
       var line = css('--line') || '#DCDAD4';
 
+      var n = 40, bw = w/n, i, v, bh;
       if(analyser){
         analyser.getByteFrequencyData(data);
-        var n = 40, bw = w/n;
-        for(var i=0;i<n;i++){
-          var v = data[Math.floor(i*data.length/n/1.6)]/255;
-          var bh = Math.max(2, v*(h-24));
+        for(i=0;i<n;i++){
+          v = data[Math.floor(i*data.length/n/1.6)]/255;
+          bh = Math.max(2, v*(h-24));
+          ctx.fillStyle = i%5===0 ? acc : line;
+          ctx.globalAlpha = i%5===0 ? .95 : .75;
+          ctx.fillRect(i*bw+bw*0.2, h-12-bh, bw*0.6, bh);
+        }
+        ctx.globalAlpha = 1;
+      } else {
+        var t = audio.currentTime;
+        for(i=0;i<n;i++){
+          v = Math.abs(Math.sin(t*(1.4 + i*0.09) + i*1.7)) * Math.abs(Math.cos(t*0.6 + i*0.4));
+          v = audio.paused ? 0.04 : 0.12 + v*0.8;
+          bh = Math.max(2, v*(h-24));
           ctx.fillStyle = i%5===0 ? acc : line;
           ctx.globalAlpha = i%5===0 ? .95 : .75;
           ctx.fillRect(i*bw+bw*0.2, h-12-bh, bw*0.6, bh);
@@ -575,6 +607,84 @@
       ctx.fillRect(0, h-12, w, 1);
       if(!audio.paused) raf = requestAnimationFrame(loop);
     })();
+  }
+
+  /* ---------- lock screen / Dynamic Island ---------- */
+  function makeArt(){
+    if(artUrl) return artUrl;
+    var c = document.createElement('canvas');
+    c.width = c.height = 512;
+    var g = c.getContext('2d');
+    g.fillStyle = '#14191D'; g.fillRect(0,0,512,512);
+    var grd = g.createLinearGradient(0,0,512,512);
+    grd.addColorStop(0,'#E8A93B'); grd.addColorStop(1,'#B8600F');
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(256,256,150,0,Math.PI*2); g.fill();
+    g.fillStyle = '#14191D';
+    g.beginPath(); g.arc(256,256,34,0,Math.PI*2); g.fill();
+    for(var i=0;i<5;i++){
+      var bh = [40,88,120,72,52][i];
+      g.fillStyle = 'rgba(20,25,29,.55)';
+      g.fillRect(196 + i*28, 256 - bh/2, 14, bh);
+    }
+    g.fillStyle = '#EDEDE8';
+    g.font = '600 44px -apple-system, system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.fillText('INVINZ', 256, 456);
+    try { artUrl = c.toDataURL('image/png'); } catch(e){ artUrl = null; }
+    return artUrl;
+  }
+
+  function setMeta(){
+    if(!('mediaSession' in navigator) || idx === -1) return;
+    var t = tracks[idx];
+    var art = makeArt();
+    try{
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.name,
+        artist: 'Invinz Player',
+        album: tracks.length + ' tracks in queue',
+        artwork: art ? [
+          {src: art, sizes:'512x512', type:'image/png'},
+          {src: art, sizes:'256x256', type:'image/png'},
+          {src: art, sizes:'96x96',  type:'image/png'}
+        ] : []
+      });
+    }catch(e){}
+  }
+
+  function setPos(){
+    if(!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    if(!audio.duration || !isFinite(audio.duration)) return;
+    try{
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration,
+        playbackRate: audio.playbackRate || 1,
+        position: Math.min(audio.currentTime, audio.duration)
+      });
+    }catch(e){}
+  }
+
+  if('mediaSession' in navigator){
+    var ms = navigator.mediaSession;
+    var handler = function(name, fn){ try{ ms.setActionHandler(name, fn); }catch(e){} };
+    handler('play',  function(){ play(); });
+    handler('pause', function(){ audio.pause(); });
+    handler('stop',  function(){ audio.pause(); audio.currentTime = 0; });
+    handler('previoustrack', function(){
+      if(audio.currentTime > 3){ audio.currentTime = 0; setPos(); return; }
+      step(-1);
+    });
+    handler('nexttrack', function(){ step(1); });
+    handler('seekbackward', function(e){
+      audio.currentTime = Math.max(0, audio.currentTime - ((e && e.seekOffset) || 10)); setPos();
+    });
+    handler('seekforward', function(e){
+      audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + ((e && e.seekOffset) || 10)); setPos();
+    });
+    handler('seekto', function(e){
+      if(e && e.seekTime != null){ audio.currentTime = e.seekTime; setPos(); }
+    });
   }
 
   render();
